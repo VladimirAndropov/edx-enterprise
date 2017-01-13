@@ -42,6 +42,18 @@ class NotConnectedToEdX(Exception):
         super(NotConnectedToEdX, self).__init__(*args, **kwargs)
 
 
+class NotConnectedToOpenEdX(Exception):
+    """
+    Exception to raise when we weren't able to import needed resources.
+
+    This is raised when we try to use the resources, rather than on
+    import, so that during testing we can load the module
+    and mock out the resources we need.
+    """
+
+    pass
+
+
 def get_identity_provider(provider_id):
     """
     Get Identity Provider with given id.

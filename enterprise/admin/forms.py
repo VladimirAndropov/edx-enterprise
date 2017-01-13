@@ -14,8 +14,9 @@ from django.db.models.fields import BLANK_CHOICE_DASH
 from django.utils.translation import ugettext as _
 
 from enterprise import utils
-from enterprise.admin.utils import ValidationMessages, email_or_username__to__email, validate_email_to_link
-from enterprise.course_catalog_api import get_all_catalogs
+from enterprise.admin.utils import (ProgramStatuses, ValidationMessages, email_or_username__to__email,
+                                    get_course_runs_from_program, validate_email_to_link)
+from enterprise.course_catalog_api import CourseCatalogApiClient
 from enterprise.lms_api import EnrollmentApiClient
 from enterprise.models import EnterpriseCustomer, EnterpriseCustomerIdentityProvider
 
@@ -34,6 +35,10 @@ class ManageLearnersForm(forms.Form):
     course = forms.CharField(
         label=_("Also enroll these learners in this course"), required=False,
         help_text=_("Provide a course ID if enrollment is desired."),
+    )
+    program = forms.CharField(
+        label=_("Or enroll these learners in this program"), required=False,
+        help_text=_("Provide a program name or ID if enrollment is desired.")
     )
     course_mode = forms.ChoiceField(
         label=_("Course enrollment mode"), required=False,
@@ -65,12 +70,22 @@ class ManageLearnersForm(forms.Form):
         MODE = "mode"
         COURSE = "course"
         COURSE_MODE = "course_mode"
+        PROGRAM = "program"
 
     class CsvColumns(object):
         """
         Namespace class for CSV column names.
         """
         EMAIL = "email"
+
+    def __init__(self, *args, **kwargs):
+        """
+        Initializes
+        :param user:
+        """
+        user = kwargs.pop('user', None)
+        self._user = user
+        super(ManageLearnersForm, self).__init__(*args, **kwargs)
 
     def clean_email_or_username(self):
         """
@@ -103,6 +118,35 @@ class ManageLearnersForm(forms.Form):
         except (HttpClientError, HttpServerError):
             raise ValidationError(ValidationMessages.INVALID_COURSE_ID.format(course_id=course_id))
 
+    def clean_program(self):
+        """
+        Clean program.
+
+        Try obtaining program treating form value as program UUID or title.
+
+        Returns:
+            dict: Program information if program found
+        """
+        program_id = self.cleaned_data[self.Fields.PROGRAM].strip()
+        if not program_id:
+            return None
+
+        try:
+            client = CourseCatalogApiClient(self._user)
+
+            program = client.get_program_by_uuid(program_id) or client.get_program_by_title(program_id)
+            if not program:
+                raise ValidationError(ValidationMessages.INVALID_PROGRAM_ID.format(program_id=program_id))
+
+            if program['status'] != ProgramStatuses.ACTIVE:
+                raise ValidationError(
+                    ValidationMessages.PROGRAM_IS_INACTIVE.format(program_id=program_id, status=program['status'])
+                )
+
+            return program
+        except (HttpClientError, HttpServerError):
+            raise ValidationError(ValidationMessages.INVALID_PROGRAM_ID.format(program_id=program_id))
+
     def clean(self):
         """
         Clean fields that depend on each other.
@@ -130,7 +174,15 @@ class ManageLearnersForm(forms.Form):
 
         cleaned_data[self.Fields.MODE] = mode
 
-        # Verify that the selected mode is valid for the given course .
+        self._validate_course()
+        self._validate_program()
+
+        return cleaned_data
+
+    def _validate_course(self):
+        """
+        Verify that the selected mode is valid for the given course .
+        """
         course_details = self.cleaned_data.get(self.Fields.COURSE)
         if course_details:
             course_mode = self.cleaned_data.get(self.Fields.COURSE_MODE)
@@ -144,7 +196,28 @@ class ManageLearnersForm(forms.Form):
                 ))
                 raise ValidationError({self.Fields.COURSE_MODE: error})
 
-        return cleaned_data
+    def _validate_program(self):
+        """
+        Verify that selected mode is available for program and all courses in the program
+        """
+        program = self.cleaned_data.get(self.Fields.PROGRAM)
+        if not program:
+            return
+
+        course_runs = get_course_runs_from_program(program)
+        try:
+            client = CourseCatalogApiClient(self._user)
+            available_modes = client.get_common_course_modes(course_runs)
+            course_mode = self.cleaned_data.get(self.Fields.COURSE_MODE)
+
+            if not course_mode:
+                raise ValidationError(ValidationMessages.COURSE_WITHOUT_COURSE_MODE)
+            if course_mode not in available_modes:
+                raise ValidationError(ValidationMessages.COURSE_MODE_NOT_AVAILABLE.format(
+                    mode=course_mode, program_title=program.get("title"), modes=", ".join(available_modes)
+                ))
+        except (HttpClientError, HttpServerError):
+            raise ValidationError(ValidationMessages.FAILED_TO_OBTAIN_MODES.format(program_title=program.get("title")))
 
 
 class EnterpriseCustomerAdminForm(forms.ModelForm):
@@ -185,7 +258,8 @@ class EnterpriseCustomerAdminForm(forms.ModelForm):
         Once retrieved, these name pairs can be used directly as a value
         for the `choices` argument to a ChoiceField.
         """
-        catalogs = get_all_catalogs(self.user)
+        catalog_api = CourseCatalogApiClient(self.user)
+        catalogs = catalog_api.get_all_catalogs()
         # order catalogs by name.
         catalogs = sorted(catalogs, key=lambda catalog: catalog.get('name', '').lower())
 

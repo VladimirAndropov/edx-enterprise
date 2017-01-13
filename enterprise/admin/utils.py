@@ -13,6 +13,16 @@ from django.utils.translation import ugettext as _
 from enterprise.models import EnterpriseCustomerUser
 
 
+class ProgramStatuses(object):
+    """
+    Namespace class for program statuses.
+    """
+    UNPUBLISHED = "unpublished"
+    ACTIVE = "active"
+    RETIRED = "retired"
+    DELETED = "deleted"
+
+
 class UrlNames(object):
     """
     Collection on URL names used in admin
@@ -28,8 +38,16 @@ class ValidationMessages(object):
     BOTH_FIELDS_SPECIFIED = _("Either \"Email or Username\" or \"CSV bulk upload\" must be specified, but both were.")
     BULK_LINK_FAILED = _("Bulk operation failed - no users were linked. Please correct the errors listed below.")
     COURSE_MODE_INVALID_FOR_COURSE = _("Enrollment mode {course_mode} not available for course {course_id}.")
-    COURSE_WITHOUT_COURSE_MODE = _("Please select a course enrollment mode for the given course.")
+    COURSE_WITHOUT_COURSE_MODE = _("Please select a course enrollment mode for the given course/program.")
     INVALID_COURSE_ID = _("Could not retrieve details for the course ID {course_id}. Please specify a valid ID.")
+    INVALID_PROGRAM_ID = _(
+        "Could not retrieve details for the program {program_id}. Please specify a valid ID or program name."
+    )
+    PROGRAM_IS_INACTIVE = _("Enrollment in program {program_id} is closed as it is in {status} status.")
+    COURSE_MODE_NOT_AVAILABLE = _(
+        "Course mode {mode} is not available for all courses in program {program_title}. Available modes are {modes}."
+    )
+    FAILED_TO_OBTAIN_MODES = _("Failed to obtain available course modes for program {program_title}")
     INVALID_EMAIL = _("{argument} does not appear to be a valid email")
     INVALID_EMAIL_OR_USERNAME = _("{argument} does not appear to be a valid email or known username")
     MISSING_EXPECTED_COLUMNS = _(
@@ -112,3 +130,18 @@ def validate_email_to_link(email, raw_email=None, message_template=None, ignore_
             email=email, ec_name=existing_record.enterprise_customer.name
         ))
     return bool(existing_record)
+
+
+def get_course_runs_from_program(program):
+    """
+    Return course runs from program data.
+
+    Returns:
+        set: course runs in given program
+    """
+    return set(
+        run["key"]
+        for course in program.get("courses", [])
+        for run in course.get("course_runs", {})
+        if "key" in run
+    )
